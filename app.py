@@ -10,8 +10,11 @@ genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 # Função para gerar embedding de texto com Gemini
 def gerar_embedding(texto):
-    embedding_response = genai.embed_query(texto)
-    return embedding_response.embeddings[0]
+    response = genai.embeddings.create(
+        model="embed-text-embedding-3-large",
+        input=[texto]
+    )
+    return response.data[0].embedding
 
 # Função para calcular similaridade e obter top 3 sugestões da base usando embeddings
 def obter_sugestoes_embeddings(descricao, base_job_codes):
