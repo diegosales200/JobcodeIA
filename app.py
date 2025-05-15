@@ -3,7 +3,8 @@ import pandas as pd
 import google.generativeai as genai
 
 # Configurar a API do Gemini
-genai.configure(api_key="AIzaSyD7R3jp2NwJL9esVzMWXapo9ll9nblwGQQ")
+import os
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 # Função para obter sugestões usando Gemini
 def obter_sugestoes_gemini(descricao, base_job_codes):
@@ -24,7 +25,7 @@ Com base nisso, retorne as 3 descrições mais compatíveis com a descrição en
     ...
 ]
 """
-    model = genai.GenerativeModel("gemini-pro")
+    model = genai.GenerativeModel("models/gemini-pro")
     response = model.generate_content(prompt)
     try:
         resultado = eval(response.text.strip())
