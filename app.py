@@ -3,7 +3,9 @@ import pandas as pd
 import google.generativeai as genai
 import os
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.feature_extraction.text import TfidfVectorizer
 import numpy as np
+import time
 
 # Configurar a API do Gemini
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
@@ -11,53 +13,68 @@ genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 # Inicializar o modelo para embeddings
 embedding_model = genai.GenerativeModel(model_name="embed-text-embedding-3-large")
 
+# Stopwords estáticas em português (adicione suas stopwords aqui)
+stop_words = [...]
+
 # Função para gerar embedding de texto com Gemini
-def gerar_embedding(texto):
-    try:
-        response = embedding_model.generate_content([{"text": texto}])
-        return response.parts[0].embedding.values
-    except Exception as e:
-        st.error(f"Erro ao gerar embedding: {e}")
-        return None
+def gerar_embedding(texto, max_retries=3, wait_time=1):
+    for i in range(max_retries):
+        try:
+            response = embedding_model.generate_content([{"text": texto}])
+            return response.parts[0].embedding.values
+        except Exception as e:
+            st.error(f"Erro ao gerar embedding (tentativa {i+1}/{max_retries}): {e}")
+            if i < max_retries - 1:
+                time.sleep(wait_time)
+            else:
+                return None
+    return None
 
-# Função para calcular similaridade e obter top 3 sugestões da base usando embeddings
-def obter_sugestoes_embeddings(descricao, base_job_codes):
-    # Gerar embedding da descrição do usuário
-    embedding_usuario = gerar_embedding(descricao)
+# Função para obter sugestões usando TF-IDF para filtragem inicial e, opcionalmente, embeddings para refinamento
+def obter_sugestoes_filtradas(descricao_usuario, base_job_codes, top_n_tfidf=5, top_k_embeddings=3):
+    tfidf = TfidfVectorizer(stop_words=stop_words, min_df=1, ngram_range=(1, 2))
+    matriz_tfidf = tfidf.fit_transform(base_job_codes['Descricao em 2024'])
+    similaridades_tfidf = cosine_similarity(tfidf.transform([descricao_usuario]), matriz_tfidf)[0]
+    indices_similares_tfidf = similaridades_tfidf.argsort()[-top_n_tfidf:][::-1]
+    resultados_tfidf = base_job_codes.iloc[indices_similares_tfidf]
 
+    embeddings_subconjunto = []
+    indices_validos_tfidf = []
+    for index, row in resultados_tfidf.iterrows():
+        embedding = gerar_embedding(row['Descricao em 2024'])
+        if embedding is not None:
+            embeddings_subconjunto.append(embedding)
+            indices_validos_tfidf.append(index)
+
+    if not embeddings_subconjunto:
+        return resultados_tfidf[['Job Code', 'Descricao em 2024', 'Titulo em 2024']].to_dict('records')
+
+    embedding_usuario = gerar_embedding(descricao_usuario)
     if embedding_usuario is None:
-        return []
+        return resultados_tfidf[['Job Code', 'Descricao em 2024', 'Titulo em 2024']].to_dict('records')
 
-    # Gerar embeddings para a base toda (cache para evitar custo em chamadas repetidas)
-    if "embeddings_base" not in st.session_state:
-        st.session_state.embeddings_base = []
-        for desc in base_job_codes['Descricao em 2024']:
-            embedding = gerar_embedding(desc)
-            if embedding is not None:
-                st.session_state.embeddings_base.append(embedding)
-        st.session_state.embeddings_base = np.array(st.session_state.embeddings_base)
+    similaridades_embeddings = cosine_similarity([embedding_usuario], embeddings_subconjunto)[0]
+    indices_similares_embeddings = similaridades_embeddings.argsort()[-top_k_embeddings:][::-1]
 
-    if not st.session_state.embeddings_base.any():
-        return []
+    resultados_finais = []
+    df_validos_tfidf = resultados_tfidf.loc[indices_validos_tfidf].reset_index(drop=True)
+    for idx in indices_similares_embeddings:
+        if idx < len(df_validos_tfidf):
+            resultados_finais.append({
+                "Job Code": df_validos_tfidf.iloc[idx]['Job Code'],
+                "Titulo": df_validos_tfidf.iloc[idx]['Titulo em 2024'],
+                "Descricao": df_validos_tfidf.iloc[idx]['Descricao em 2024']
+            })
 
-    # Calcular similaridades (cosine similarity)
-    similaridades = cosine_similarity([embedding_usuario], st.session_state.embeddings_base)[0]
+    return resultados_finais
 
-    # Pegar índices dos top 3 mais similares
-    top_indices = similaridades.argsort()[-3:][::-1]
-
-    resultados = []
-    for idx in top_indices:
-        row = base_job_codes.iloc[idx]
-        resultados.append({
-            "Job Code": row['Job Code'],
-            "Titulo": row['Titulo em 2024'],
-            "Descricao": row['Descricao em 2024']
-        })
-    return resultados
-
-
-
+def gerar_descricao_gemini(descricao_base):
+    try:
+        response = embedding_model.generate_content([{"text": descricao_base}])
+        return response.parts[0].text
+    except Exception as e:
+        st.error(f"Erro ao gerar descrição com Gemini: {e}")
+        return None
 
 # Funções para carregar as bases
 @st.cache_data
@@ -107,7 +124,7 @@ modo_busca = st.radio("Escolha o modo de busca:", [
 base_job_codes = carregar_base_job_codes()
 base_substituicao = carregar_base_substituicao()
 
-# Modo 1: Descrição da Atividade com embeddings + similaridade
+# Modo 1: Descrição da Atividade com filtragem TF-IDF e embeddings
 if modo_busca == "Descrição da Atividade":
     descricao_usuario = st.text_area("Digite a descrição do cargo:")
 
@@ -121,7 +138,7 @@ if modo_busca == "Descrição da Atividade":
         if descricao_usuario.strip():
             if base_job_codes is not None:
                 with st.spinner("Buscando sugestões..."):
-                    resultados = obter_sugestoes_embeddings(descricao_usuario, base_job_codes)
+                    resultados = obter_sugestoes_filtradas(descricao_usuario, base_job_codes)
                 st.session_state.opcoes_descricao = [
                     (r['Job Code'], r['Descricao'], r['Titulo']) for r in resultados
                 ]
@@ -137,7 +154,12 @@ if modo_busca == "Descrição da Atividade":
             st.markdown(f"### Opção {i}")
             st.write(f"**Título:** {titulo}")
             st.write(f"**Código:** {codigo}")
-            st.write(f"**Descrição:** {descricao}")
+            with st.spinner("Gerando descrição detalhada..."):
+                descricao_detalhada = gerar_descricao_gemini(descricao)
+            if descricao_detalhada:
+                st.write(f"**Descrição:** {descricao_detalhada}")
+            else:
+                st.write(f"**Descrição (Base):** {descricao} (Erro ao gerar descrição detalhada)")
 
         opcao_selecionada = st.selectbox(
             "Selecione a opção:",
@@ -147,57 +169,4 @@ if modo_busca == "Descrição da Atividade":
         nivel_carreira = st.selectbox("Selecione o nível de carreira:", list(NIVEIS_CARREIRA.keys()))
 
         if st.button("Confirmar Seleção"):
-            index_selecionado = int(opcao_selecionada.split()[1]) - 1
-            codigo, _, _ = st.session_state.opcoes_descricao[index_selecionado]
-            complemento = NIVEIS_CARREIRA[nivel_carreira]
-            codigo_completo = f"{codigo}-{complemento}"
-            registrar_feedback(descricao_usuario, codigo_completo)
-            st.success(f"Código Completo Selecionado: {codigo_completo}")
-
-# Modo 2: Busca por Colaborador
-elif modo_busca == "Colaborador (Ativo ou Desligado)":
-    if base_substituicao is not None:
-        substituido = st.selectbox("Selecione o nome do colaborador:", sorted(base_substituicao['Substituido'].dropna().unique()))
-        if substituido:
-            ultimo_registro = base_substituicao[base_substituicao['Substituido'] == substituido].sort_values(by='Data Referencia', ascending=False).iloc[0]
-            st.markdown("### Último Registro Encontrado")
-            st.write(f"**Job Code:** {ultimo_registro['Job Code']}")
-            st.write(f"**Título:** {ultimo_registro['Titulo Job Code']}")
-            st.write(f"**Cargo:** {ultimo_registro['Cargo']}")
-            st.write(f"**Gestor:** {ultimo_registro['Gestor']}")
-            st.write(f"**Descrição:** {ultimo_registro['Descricao em 2024']}")
-    else:
-        st.error("Base de substituição não carregada.")
-
-# Modo 3: Busca por Gestor e Cargo
-elif modo_busca == "Gestor e Cargo":
-    if base_substituicao is not None:
-        gestor = st.selectbox("Passo 1 - Selecione o gestor:", sorted(base_substituicao['Gestor'].dropna().unique()))
-
-        if gestor:
-            cargos_filtrados = base_substituicao[base_substituicao['Gestor'] == gestor]['Cargo'].dropna().unique()
-            cargo = st.selectbox("Passo 2 - Selecione o cargo:", sorted(cargos_filtrados))
-        else:
-            cargo = None
-
-        if cargo:
-            resultado = base_substituicao[
-                (base_substituicao['Gestor'] == gestor) & (base_substituicao['Cargo'] == cargo)
-            ].sort_values(by='Data Referencia', ascending=False)
-
-            if not resultado.empty:
-                st.markdown("### Resultados Encontrados")
-                job_codes_exibidos = set()
-                for _, linha in resultado.iterrows():
-                    job_code = linha['Job Code']
-                    if job_code not in job_codes_exibidos:
-                        job_codes_exibidos.add(job_code)
-                        st.write(f"**Job Code:** {job_code}")
-                        st.write(f"**Título:** {linha['Titulo Job Code']}")
-                        st.write(f"**Descrição:** {linha['Descricao em 2024']}")
-            else:
-                st.warning("Nenhum resultado encontrado para a combinação selecionada.")
-        else:
-            st.warning("Por favor, selecione um cargo válido.")
-    else:
-        st.error("Base de substituição não carregada.")
+            index_selecionado = int(opcao_selecionada.split()
