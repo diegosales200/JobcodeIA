@@ -14,7 +14,11 @@ embedding_model = genai.GenerativeModel(model_name="embed-text-embedding-3-large
 # Função para gerar embedding de texto com Gemini
 def gerar_embedding(texto):
     try:
-        response = embedding_model.embed(texto)
+        response = embedding_model.generate_content(
+            model="embed-text-embedding-3-large", # Explicitamente passar o nome do modelo
+            contents=[{"parts": [{"text": texto}]}],
+            task_type="SEMANTIC_RETRIEVAL" # Indicar o tipo de tarefa
+        )
         return response.embedding.values
     except Exception as e:
         st.error(f"Erro ao gerar embedding: {e}")
@@ -55,6 +59,8 @@ def obter_sugestoes_embeddings(descricao, base_job_codes):
             "Descricao": row['Descricao em 2024']
         })
     return resultados
+
+# ... (o restante do seu código permanece o mesmo)
 
 # Funções para carregar as bases
 @st.cache_data
