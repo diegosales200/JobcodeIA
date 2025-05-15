@@ -15,11 +15,10 @@ embedding_model = genai.GenerativeModel(model_name="embed-text-embedding-3-large
 def gerar_embedding(texto):
     try:
         response = embedding_model.generate_content(
-            model="embed-text-embedding-3-large", # Explicitamente passar o nome do modelo
             contents=[{"parts": [{"text": texto}]}],
-            task_type="SEMANTIC_RETRIEVAL" # Indicar o tipo de tarefa
+            task_type="SEMANTIC_RETRIEVAL"
         )
-        return response.embedding.values
+        return response.parts[0].embedding.values
     except Exception as e:
         st.error(f"Erro ao gerar embedding: {e}")
         return None
@@ -60,7 +59,7 @@ def obter_sugestoes_embeddings(descricao, base_job_codes):
         })
     return resultados
 
-# ... (o restante do seu código permanece o mesmo)
+
 
 # Funções para carregar as bases
 @st.cache_data
