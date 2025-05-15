@@ -8,32 +8,44 @@ import numpy as np
 # Configurar a API do Gemini
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
+# Inicializar o modelo para embeddings
+embedding_model = genai.GenerativeModel(model_name="embed-text-embedding-3-large")
+
 # Função para gerar embedding de texto com Gemini
 def gerar_embedding(texto):
-    response = genai.embeddings.create(
-        model="embed-text-embedding-3-large",
-        input=[texto]
-    )
-    return response.data[0].embedding
+    try:
+        response = embedding_model.embed(texto)
+        return response.embedding.values
+    except Exception as e:
+        st.error(f"Erro ao gerar embedding: {e}")
+        return None
 
 # Função para calcular similaridade e obter top 3 sugestões da base usando embeddings
 def obter_sugestoes_embeddings(descricao, base_job_codes):
     # Gerar embedding da descrição do usuário
     embedding_usuario = gerar_embedding(descricao)
-    
+
+    if embedding_usuario is None:
+        return []
+
     # Gerar embeddings para a base toda (cache para evitar custo em chamadas repetidas)
     if "embeddings_base" not in st.session_state:
         st.session_state.embeddings_base = []
         for desc in base_job_codes['Descricao em 2024']:
-            st.session_state.embeddings_base.append(gerar_embedding(desc))
+            embedding = gerar_embedding(desc)
+            if embedding is not None:
+                st.session_state.embeddings_base.append(embedding)
         st.session_state.embeddings_base = np.array(st.session_state.embeddings_base)
-    
+
+    if not st.session_state.embeddings_base.any():
+        return []
+
     # Calcular similaridades (cosine similarity)
     similaridades = cosine_similarity([embedding_usuario], st.session_state.embeddings_base)[0]
-    
+
     # Pegar índices dos top 3 mais similares
     top_indices = similaridades.argsort()[-3:][::-1]
-    
+
     resultados = []
     for idx in top_indices:
         row = base_job_codes.iloc[idx]
